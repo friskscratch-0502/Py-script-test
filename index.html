@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyScript 画像モザイクメーカー</title>
+
+    <!-- PyScriptの読み込み -->
+    <link rel="stylesheet" href="https://pyscript.net">
+    <script type="module" src="https://pyscript.net"></script>
+
+    <style>
+        body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; text-align: center; background: #fafafa; color: #333; }
+        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 8px 16px rgba(0,0,0,0.05); }
+        .control-group { margin: 20px 0; display: flex; justify-content: center; align-items: center; gap: 15px; }
+        input[type="range"] { width: 200px; }
+        .image-container { display: flex; justify-content: center; gap: 20px; margin-top: 20px; flex-wrap: wrap; }
+        .img-box { border: 2px dashed #ccc; padding: 10px; border-radius: 8px; background: #fff; min-width: 200px; min-height: 200px; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        img { max-width: 280px; max-height: 280px; object-fit: contain; border-radius: 4px; }
+        #status { font-weight: bold; color: #ff6b6b; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h1>🖼️ Wasm 画像モザイクメーカー</h1>
+        <p>サーバー通信なし！ブラウザ内のPython(Pillow)が直接画像をモザイク処理します。</p>
+
+        <!-- ファイル選択 -->
+        <div class="control-group">
+            <input type="file" id="file-upload" accept="image/*">
+        </div>
+
+        <!-- モザイクの粗さ調整（スライダー） -->
+        <div class="control-group">
+            <label for="block-size">モザイクの粗さ: <span id="size-value">16</span>px</label>
+            <input type="range" id="block-size" min="4" max="64" step="4" value="16">
+        </div>
+
+        <!-- 状態表示 -->
+        <div id="status">Python環境を準備中...（初回のみ数秒かかります）</div>
+
+        <!-- 画像表示エリア -->
+        <div class="image-container">
+            <div class="img-box">
+                <p style="color:#888;">【オリジナル画像】</p>
+                <div id="original-preview"></div>
+            </div>
+            <div class="img-box">
+                <p style="color:#888;">【モザイク変換後】</p>
+                <div id="mosaic-preview"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 
+      Python環境の設定：画像処理ライブラリ「Pillow」を読み込む 
+    -->
+    <script type="py" config='{"packages": ["Pillow"]}'>
+        import io
+        import base64
+        from pyscript import window, document
+        from pyscript.ffi import create_proxy
+        from PIL import Image
+
+        # グローバル変数で選択された画像を保持
+        current_image = None
+
+        def process_image(event=None):
+            global current_image
+            if current_image is None:
+                return
+
+            document.getElementById("status").innerText = "モザイク処理中..."
+
+            try:
+                # 1. スライダーからモザイクのブロックサイズを取得
+                block_size = int(document.getElementById("block-size").value)
+                document.getElementById("size-value").innerText = str(block_size)
+
+                # 原寸サイズを保持
+                orig_w, orig_h = current_image.size
+
+                # 2. 【モザイク化のロジック】一度小さく縮小してから、ニアレストネイバーで元のサイズに拡大する
+                # これにより、Pillowだけで一瞬で綺麗なドット絵・モザイク画像が作れます
+                small_w = max(1, orig_w // block_size)
+                small_h = max(1, orig_h // block_size)
+                
+                small_img = current_image.resize((small_w, small_h), Image.Resampling.BILINEAR)
+                mosaic_img = small_img.resize((orig_w, orig_h), Image.Resampling.NEAREST)
+
+                # 3. 処理した画像をブラウザで表示できる形式（Base64形式のHTMLタグ）に変換
+                buffered = io.BytesIO()
+                mosaic_img.save(buffered, format="PNG")
+                img_str = base64.b64encode(buffered.getvalue()).decode()
+                
+                # HTML側に出力
+                document.getElementById("mosaic-preview").innerHTML = f'<img src="data:image/png;base64,{img_str}">'
+                document.getElementById("status").innerText = "変換完了！"
+            except Exception as e:
+                document.getElementById("status").innerText = f"エラーが発生しました: {str(e)}"
+
+        async def upload_image(event):
+            global current_image
+            file_list = event.target.files
+            if len(file_list) == 0:
+                return
+
+            document.getElementById("status").innerText = "画像を読み込み中..."
+            
+            # JavaScriptのFile APIを使って画像データをバイナリとして読み込む
+            file = file_list.item(0)
+            array_buffer = await file.arrayBuffer()
+            file_bytes = array_buffer.to_py().tobytes()
+
+            # Pillowで画像を開く
+            current_image = Image.open(io.BytesIO(file_bytes))
+
+            # オリジナルのプレビューを表示
+            buffered = io.BytesIO()
+            current_image.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            document.getElementById("original-preview").innerHTML = f'<img src="data:image/png;base64,{img_str}">'
+
+            # モザイク処理を実行
+            process_image()
+
+        # Python側が立ち上がったらステータスを更新
+        document.getElementById("status").innerText = "画像をアップロードしてください"
+
+        # JavaScriptのイベントリスナーにPythonの関数を登録（バインド）する
+        upload_proxy = create_proxy(upload_image)
+        change_proxy = create_proxy(process_image)
+
+        document.getElementById("file-upload").addEventListener("change", upload_proxy)
+        document.getElementById("block-size").addEventListener("input", change_proxy)
+    </script>
+
+</body>
+</html>
